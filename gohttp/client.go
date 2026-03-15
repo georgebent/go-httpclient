@@ -30,12 +30,12 @@ func (c *Client) Post(url string, headers http.Header, body interface{}) (*core.
 }
 
 func (c *Client) Put(url string, headers http.Header, body interface{}) (*core.Response, error) {
-	return c.do(http.MethodPut, url, headers, nil)
+	return c.do(http.MethodPut, url, headers, body)
 }
 
 func (c *Client) Delete(url string, headers http.Header) (*core.Response, error) {
 	return c.do(http.MethodDelete, url, headers, nil)
 }
 func (c *Client) Patch(url string, headers http.Header, body interface{}) (*core.Response, error) {
-	return c.do(http.MethodPatch, url, headers, nil)
+	return c.do(http.MethodPatch, url, headers, body)
 }

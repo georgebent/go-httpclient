@@ -23,33 +23,33 @@ const (
 
 func (c *Client) do(method string, url string, headers http.Header, body interface{}) (*core.Response, error) {
 	fullHeaders := c.getRequestHeaders(headers)
-	requestBody, error := c.getRequestBody(fullHeaders.Get(gomime.HEADER_CONTENT_TYPE), body)
-	if error != nil {
-		return nil, error
+	requestBody, err := c.getRequestBody(fullHeaders.Get(gomime.HEADER_CONTENT_TYPE), body)
+	if err != nil {
+		return nil, err
 	}
 
-	request, error := http.NewRequest(method, url, bytes.NewBuffer(requestBody))
-	if error != nil {
-		return nil, error
+	request, err := http.NewRequest(method, url, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return nil, err
 	}
 
 	request.Header = fullHeaders
 
-	response, error := c.getHttpClient().Do(request)
-	if error != nil {
-		return nil, error
+	response, err := c.getHttpClient().Do(request)
+	if err != nil {
+		return nil, err
 	}
 
 	defer response.Body.Close()
-	responseBody, error := io.ReadAll(response.Body)
-	if error != nil {
-		return nil, error
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	finalResponse := core.Response{
 		Status:     response.Status,
 		StatusCode: response.StatusCode,
-		Headers:    request.Header,
+		Headers:    response.Header,
 		Body:       responseBody,
 	}
 

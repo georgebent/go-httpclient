@@ -125,6 +125,14 @@ gohttp_mock.MockupServer.AddMock(gohttp_mock.Mock{
 })
 ```
 
+## Linting
+
+The project uses `golangci-lint` with a focused ruleset aimed at catching bugs and keeping formatting consistent without adding noisy style-only checks.
+
+```bash
+env GOCACHE=$(pwd)/.gocache GOLANGCI_LINT_CACHE=$(pwd)/.golangci-cache golangci-lint run ./...
+```
+
 ## Collaboration
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.

@@ -18,7 +18,7 @@ var (
 
 type mockServer struct {
 	enabled     bool
-	serverMutex sync.Mutex
+	serverMutex sync.RWMutex
 	mocks       map[string]*Mock
 	httpClient  core.HttpClient
 }
@@ -38,6 +38,9 @@ func StopMockServer() {
 }
 
 func (m *mockServer) IsMockServerEnabled() bool {
+	m.serverMutex.RLock()
+	defer m.serverMutex.RUnlock()
+
 	return m.enabled
 }
 
@@ -55,6 +58,13 @@ func AddMock(mock Mock) {
 	key := MockupServer.getMockKey(mock.Method, mock.Url, mock.RequestBody)
 
 	MockupServer.mocks[key] = &mock
+}
+
+func (m *mockServer) getMock(method string, url string, body string) *Mock {
+	m.serverMutex.RLock()
+	defer m.serverMutex.RUnlock()
+
+	return m.mocks[m.getMockKey(method, url, body)]
 }
 
 func (m *mockServer) getMockKey(method string, url string, body string) string {
@@ -77,5 +87,8 @@ func (m *mockServer) cleanBody(body string) string {
 }
 
 func (m *mockServer) GetMockedClient() core.HttpClient {
+	m.serverMutex.RLock()
+	defer m.serverMutex.RUnlock()
+
 	return m.httpClient
 }
