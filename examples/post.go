@@ -1,8 +1,11 @@
 package examples
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/georgebent/go-httpclient/gohttp"
 )
 
 func Post(url string) (string, error) {
@@ -12,13 +15,18 @@ func Post(url string) (string, error) {
 	body := make(map[string]string)
 	body["firstname"] = "John"
 	body["lastname"] = "Stranger"
-	body["type"] = "Builder Singletone"
+	body["type"] = "Builder Singleton"
 
-	response, error := HttpClient.Post(url, headers, body)
-	if error != nil {
-		fmt.Println(string(error.Error()))
+	response, err := HttpClient.Post(
+		context.Background(),
+		url,
+		gohttp.WithHeaders(headers),
+		gohttp.WithBody(body),
+	)
+	if err != nil {
+		fmt.Println(err.Error())
 
-		return "", error
+		return "", err
 	}
 
 	fmt.Println(response.StatusCode)
