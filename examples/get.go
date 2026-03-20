@@ -1,7 +1,9 @@
 package examples
 
+import "context"
+
 func Get() (string, error) {
-	res, err := HttpClient.Get("http://localhost", nil)
+	res, err := HttpClient.Get(context.Background(), "http://localhost")
 	if err != nil {
 		return "", err
 	}

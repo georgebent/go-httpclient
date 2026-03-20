@@ -1,138 +1,182 @@
 # Go HTTP Client
 
-A production-ready HTTP client in Go with lots of useful features and using nothing more than the standard library of the language.
+A standard-library-first HTTP client for Go with a builder API, request options, context support, bounded response bodies, response metadata, and test-friendly mocking.
 
 ## Installation
 
 ```bash
-# Go Modules
-require github.com/georgebent/go-httpclient
+go get github.com/georgebent/go-httpclient
 ```
 
 ## Usage
-In order to use the library for making HTTP calls you need to import the corresponding HTTP package:
+
+Import the client package:
 
 ```go
 import "github.com/georgebent/go-httpclient/gohttp"
 ```
 
-## Configuring the client
-Once you have imported the package, you can now start using the client. First you need to configure and build the client as you need:
+## Build a client
 
 ```go
 headers := make(http.Header)
-headers.Set("Some-Common-Header", "value-for-all-requests")
+headers.Set("Content-Type", "application/json")
+headers.Set("X-Common-Header", "value-for-all-requests")
 
-// Create a new builder:
 client := gohttp.NewBuilder().
-
-// You can set global headers to be used in every request made by this client:
-SetHeaders(headers).
-
-// Configure the timeout for getting a new connection:
-SetConnectionTimeout(2 * time.Second).
-
-// Configure the timeout for performing the actual HTTP call:
-SetResponseTimeout(3 * time.Second).
-
-// Configure the User-Agent header that will be used for all of the requests:
-SetUserAgent("Your-User-Agent").
-
-// Finally, build the client and start using it!
-Build()
+	SetHeaders(headers).
+	SetConnectionTimeout(2 * time.Second).
+	SetResponseTimeout(3 * time.Second).
+	SetMaxIdleConnections(10).
+	SetMaxBodyBytes(1024 * 1024).
+	SetUserAgent("your-user-agent").
+	Build()
 ```
 
-## Performing HTTP calls
-The ``Client`` interface provides convenient methods that you can use to perform different HTTP calls. If you get an error then you can safely ignore the response object since it won't be there.
+## Perform requests
 
-**Important:** There is no need to read & close anything from the response since the client is doing all of this for you. You just need to get the response and start using it!
-
-Take a look at all of the [EXAMPLES](examples) for more information.
-
-### Get
+The new core API is `Do(ctx, method, url, opts...)`.
 
 ```go
-res, err := HttpClient.Get("http://localhost", nil)
+response, err := client.Do(
+	context.Background(),
+	http.MethodPost,
+	"https://api.example.com/users",
+	gohttp.WithHeaders(http.Header{
+		"Authorization": []string{"Bearer ABC-123"},
+	}),
+	gohttp.WithBody(map[string]string{
+		"firstname": "John",
+		"lastname":  "Stranger",
+	}),
+	gohttp.WithMaxBodyBytes(64*1024),
+)
 if err != nil {
-	return "", err
+	return err
 }
 
 fmt.Println(response.StatusCode)
 fmt.Println(response.BodyString())
+fmt.Println(response.FinalURL)
+fmt.Println(response.ContentLength)
+fmt.Println(response.Duration)
+fmt.Println(response.RedirectCount)
 ```
 
-### Post
+Convenience methods are also available:
 
 ```go
+response, err := client.Get(context.Background(), "https://example.com/health")
+```
 
-// The struct representing the actual response from the API we're calling:
-headers := make(http.Header)
-headers.Set("Authorization", "Bearer ABC-12345678")
+## Request options
 
-body := make(map[string]string)
-body["firstname"] = "John"
-body["lastname"] = "Stranger"
-body["type"] = "Builder"
+Available request options:
 
-response, error := HttpClient.Post("http://localhost", headers, body)
-if error != nil {
-	fmt.Println(string(error.Error()))
+- `gohttp.WithHeaders(headers)`
+- `gohttp.WithBody(body)`
+- `gohttp.WithBodyReader(reader)`
+- `gohttp.WithMaxBodyBytes(limit)`
 
-	return "", error
+`WithBody(...)` and `WithBodyReader(...)` are mutually exclusive.
+
+## Response model
+
+The response contains both payload and metadata:
+
+```go
+type Response struct {
+	Status        string
+	StatusCode    int
+	Headers       http.Header
+	Body          []byte
+	FinalURL      string
+	ContentLength int64
+	Duration      time.Duration
+	RedirectCount int
 }
+```
 
-fmt.Println(response.StatusCode)
-fmt.Println(response.BodyString())
+## Custom transport and redirects
 
+You can inject a custom `*http.Client`, a custom `http.RoundTripper`, or redirect handling:
+
+```go
+client := gohttp.NewBuilder().
+	SetTransport(customTransport).
+	SetRedirectPolicy(gohttp.RedirectPolicy{
+		MaxRedirects: 3,
+		Validate: func(req *http.Request, via []*http.Request) error {
+			return nil
+		},
+	}).
+	Build()
+```
+
+If you provide `SetHttpClient(...)`, it has the highest priority. Builder transport and redirect settings are not overlaid onto that client.
+
+## Error helpers
+
+Helpers are available for common network failures:
+
+```go
+if gohttp.IsTimeout(err) { ... }
+if gohttp.IsDNS(err) { ... }
+if gohttp.IsTLS(err) { ... }
+if gohttp.IsConnection(err) { ... }
+if gohttp.IsCanceled(err) { ... }
+
+kind := gohttp.ClassifyError(err)
 ```
 
 ## Testing
 
-The library provides a convenient package for mocking requests and getting a particular response. The mock key is generated using the ``HTTP method``, the ``request URL`` and the ``request body``. Every request with these same elements will return the same mock.
-
-In order to use the mocking features you need to import the corresponding package:
+The recommended path is transport-level mocking.
 
 ```go
-import "github.com/georgebent/go-httpclient/gohttp"
+mockTransport := gohttp_mock.NewTransport()
+mockTransport.AddMock(gohttp_mock.Mock{
+	Method:         http.MethodGet,
+	Url:            "https://api.example.com/health",
+	ResponseStatus: http.StatusOK,
+	ResponseHeaders: http.Header{
+		"X-Mock": []string{"true"},
+	},
+	ResponseBody: "ok",
+})
+
+client := gohttp.NewBuilder().
+	SetTransport(mockTransport).
+	Build()
+
+response, err := client.Get(context.Background(), "https://api.example.com/health")
 ```
 
-### Starting the mock server:
-```go
-func TestMain(m *testing.M) {
-	// Tell the HTTP library to mock any further requests from here.
-	gohttp_mock.MockupServer.StartMockServer()
-
-	// Start the test cases for this pacakge:
-	os.Exit(m.Run())
-}
-```
-
-Once you start the mock server, every request will be handled by this server and will not be sent against the real API. If there is no mock matching the current request you'll get an error saying ``no mock matching {METHOD} from '{URL}' with given body``.
-
-### Configuring a given HTTP mock:
+Legacy global mocking is still available for backward compatibility:
 
 ```go
-// Delete all mocks in every new test case to ensure a clean environment:
+gohttp_mock.StartMockServer()
+defer gohttp_mock.StopMockServer()
 gohttp_mock.MockupServer.DeleteMocks()
 
-// Configure a new mock:
-gohttp_mock.MockupServer.AddMock(gohttp_mock.Mock{
-	Method:      http.MethodPost,
-	Url:         "https://api.github.com/user/repos",
-	RequestBody: `{"name":"test-repo","private":true}`,
-
-	Error: errors.New("timeout from github"),
+gohttp_mock.AddMock(gohttp_mock.Mock{
+	Method:         http.MethodGet,
+	Url:            "http://localhost",
+	ResponseStatus: http.StatusOK,
+	ResponseBody:   "ok",
 })
 ```
 
+## Examples
+
+See `examples/get.go`, `examples/post.go`, and `examples/singleton_client.go`.
+
 ## Linting
 
-The project uses `golangci-lint` with a focused ruleset aimed at catching bugs and keeping formatting consistent without adding noisy style-only checks.
-
 ```bash
-env GOCACHE=$(pwd)/.gocache GOLANGCI_LINT_CACHE=$(pwd)/.golangci-cache golangci-lint run ./...
+golangci-lint run ./...
 ```
 
 ## Collaboration
 
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
+Pull requests are welcome. For major changes, open an issue first.

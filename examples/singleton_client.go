@@ -20,7 +20,8 @@ func getHttpClient() gohttp.HttpClient {
 		NewBuilder().
 		SetHeaders(headers).
 		SetConnectionTimeout(3 * time.Second).
-		SetConnectionTimeout(3 * time.Second).
+		SetResponseTimeout(3 * time.Second).
+		SetMaxBodyBytes(1024 * 1024).
 		SetUserAgent("desktop").
 		Build()
 

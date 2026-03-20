@@ -1,9 +1,7 @@
 package gohttp_mock
 
 import (
-	"crypto/md5"
-	"encoding/hex"
-	"strings"
+	"net/http"
 	"sync"
 
 	"github.com/georgebent/go-httpclient/core"
@@ -11,16 +9,14 @@ import (
 
 var (
 	MockupServer = mockServer{
-		mocks:      make(map[string]*Mock),
-		httpClient: &httpClientMock{},
+		transport: NewTransport(),
 	}
 )
 
 type mockServer struct {
 	enabled     bool
 	serverMutex sync.RWMutex
-	mocks       map[string]*Mock
-	httpClient  core.HttpClient
+	transport   *MockTransport
 }
 
 func StartMockServer() {
@@ -45,50 +41,25 @@ func (m *mockServer) IsMockServerEnabled() bool {
 }
 
 func (m *mockServer) DeleteMocks() {
-	m.serverMutex.Lock()
-	defer m.serverMutex.Unlock()
-
-	m.mocks = make(map[string]*Mock)
+	m.transport.DeleteMocks()
 }
 
 func AddMock(mock Mock) {
-	MockupServer.serverMutex.Lock()
-	defer MockupServer.serverMutex.Unlock()
-
-	key := MockupServer.getMockKey(mock.Method, mock.Url, mock.RequestBody)
-
-	MockupServer.mocks[key] = &mock
+	MockupServer.transport.AddMock(mock)
 }
 
-func (m *mockServer) getMock(method string, url string, body string) *Mock {
+func (m *mockServer) GetMockedTransport() http.RoundTripper {
 	m.serverMutex.RLock()
 	defer m.serverMutex.RUnlock()
 
-	return m.mocks[m.getMockKey(method, url, body)]
-}
-
-func (m *mockServer) getMockKey(method string, url string, body string) string {
-	hasher := md5.New()
-	hasher.Write([]byte(method + url + m.cleanBody(body)))
-
-	return hex.EncodeToString(hasher.Sum(nil))
-}
-
-func (m *mockServer) cleanBody(body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return ""
-	}
-
-	body = strings.ReplaceAll(body, "\t", "")
-	body = strings.ReplaceAll(body, "\n", "")
-
-	return body
+	return m.transport
 }
 
 func (m *mockServer) GetMockedClient() core.HttpClient {
 	m.serverMutex.RLock()
 	defer m.serverMutex.RUnlock()
 
-	return m.httpClient
+	return &httpClientMock{
+		transport: m.transport,
+	}
 }

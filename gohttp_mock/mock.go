@@ -15,8 +15,9 @@ type Mock struct {
 	RequestBody string
 	Error       error
 
-	ResponseBody   string
-	ResponseStatus int
+	ResponseHeaders http.Header
+	ResponseBody    string
+	ResponseStatus  int
 }
 
 // GetResponse returns a Response object based on the mock configuration.
@@ -26,9 +27,11 @@ func (m *Mock) GetResponse() (*core.Response, error) {
 	}
 
 	response := core.Response{
-		StatusCode: m.ResponseStatus,
-		Body:       []byte(m.ResponseBody),
-		Status:     fmt.Sprintf("%d %s", m.ResponseStatus, http.StatusText(m.ResponseStatus)),
+		StatusCode:    m.ResponseStatus,
+		Body:          []byte(m.ResponseBody),
+		Status:        fmt.Sprintf("%d %s", m.ResponseStatus, http.StatusText(m.ResponseStatus)),
+		Headers:       m.ResponseHeaders,
+		ContentLength: int64(len(m.ResponseBody)),
 	}
 
 	return &response, nil
