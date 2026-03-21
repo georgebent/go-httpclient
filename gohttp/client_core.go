@@ -59,23 +59,27 @@ func (c *Client) do(ctx context.Context, method string, url string, opts ...Requ
 	}
 
 	defer response.Body.Close()
-	responseBody, err := c.readResponseBody(response.Body, c.getMaxBodyBytes(requestConfig))
+	finalResponse := &core.Response{
+		Status:        response.Status,
+		StatusCode:    response.StatusCode,
+		Headers:       response.Header,
+		FinalURL:      c.getFinalURL(response),
+		ContentLength: response.ContentLength,
+		RedirectCount: c.getRedirectCount(response),
+	}
+
+	responseBody, tooLarge, err := c.readResponseBody(response.Body, c.getMaxBodyBytes(requestConfig))
+	finalResponse.Body = responseBody
+	finalResponse.Duration = time.Since(startedAt)
 	if err != nil {
 		return nil, err
 	}
 
-	finalResponse := core.Response{
-		Status:        response.Status,
-		StatusCode:    response.StatusCode,
-		Headers:       response.Header,
-		Body:          responseBody,
-		FinalURL:      c.getFinalURL(response),
-		ContentLength: response.ContentLength,
-		Duration:      time.Since(startedAt),
-		RedirectCount: c.getRedirectCount(response),
+	if tooLarge {
+		return finalResponse, ErrBodyTooLarge
 	}
 
-	return &finalResponse, nil
+	return finalResponse, nil
 }
 
 func (c *Client) getRequestHeaders(requestHeaders http.Header) http.Header {
@@ -163,9 +167,10 @@ func newRequestConfig(opts ...RequestOption) (*RequestConfig, error) {
 	return cfg, nil
 }
 
-func (c *Client) readResponseBody(body io.Reader, limit int64) ([]byte, error) {
+func (c *Client) readResponseBody(body io.Reader, limit int64) ([]byte, bool, error) {
 	if limit <= 0 {
-		return io.ReadAll(body)
+		payload, err := io.ReadAll(body)
+		return payload, false, err
 	}
 
 	limitedBody := &io.LimitedReader{
@@ -175,14 +180,14 @@ func (c *Client) readResponseBody(body io.Reader, limit int64) ([]byte, error) {
 
 	payload, err := io.ReadAll(limitedBody)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	if int64(len(payload)) > limit {
-		return nil, ErrBodyTooLarge
+		return payload, true, nil
 	}
 
-	return payload, nil
+	return payload, false, nil
 }
 
 func (c *Client) getMaxBodyBytes(cfg *RequestConfig) int64 {
