@@ -408,10 +408,23 @@ func TestResponseMetadataIsPopulated(t *testing.T) {
 func TestBuilderMaxBodyBytesLimitsResponse(t *testing.T) {
 	httpClient := &http.Client{
 		Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			headers := make(http.Header)
+			headers.Set("X-Response-Id", "resp-123")
+
+			firstRequest := &http.Request{URL: mustParseURL(t, "http://example.test/original")}
+			redirectResponse := &http.Response{
+				Status:     "302 Found",
+				StatusCode: http.StatusFound,
+				Header:     make(http.Header),
+				Request:    firstRequest,
+			}
+
+			request.Response = redirectResponse
+
 			return &http.Response{
 				Status:        "200 OK",
 				StatusCode:    http.StatusOK,
-				Header:        make(http.Header),
+				Header:        headers,
 				Body:          io.NopCloser(strings.NewReader("toolarge")),
 				ContentLength: int64(len("toolarge")),
 				Request:       request,
@@ -421,9 +434,45 @@ func TestBuilderMaxBodyBytesLimitsResponse(t *testing.T) {
 
 	client := NewBuilder().SetHttpClient(httpClient).SetMaxBodyBytes(4).Build()
 
-	_, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource")
+	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource")
 	if !errors.Is(err, ErrBodyTooLarge) {
 		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
+	}
+
+	if response == nil {
+		t.Fatal("expected response to be returned with ErrBodyTooLarge")
+	}
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected status code 200, got %d", response.StatusCode)
+	}
+
+	if response.FinalURL != "http://example.test/resource" {
+		t.Fatalf("expected final URL to be populated, got %q", response.FinalURL)
+	}
+
+	if response.Headers.Get("X-Response-Id") != "resp-123" {
+		t.Fatalf("expected response headers to be preserved, got %q", response.Headers.Get("X-Response-Id"))
+	}
+
+	if response.ContentLength != int64(len("toolarge")) {
+		t.Fatalf("expected content length %d, got %d", len("toolarge"), response.ContentLength)
+	}
+
+	if response.RedirectCount != 1 {
+		t.Fatalf("expected 1 redirect, got %d", response.RedirectCount)
+	}
+
+	if response.Duration <= 0 {
+		t.Fatalf("expected positive duration, got %v", response.Duration)
+	}
+
+	if len(response.Body) != 5 {
+		t.Fatalf("expected truncated body of 5 bytes, got %d", len(response.Body))
+	}
+
+	if response.BodyString() != "toola" {
+		t.Fatalf("expected first 5 bytes of body, got %q", response.BodyString())
 	}
 }
 

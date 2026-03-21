@@ -80,6 +80,9 @@ Available request options:
 
 `WithBody(...)` and `WithBodyReader(...)` are mutually exclusive.
 
+If the response body exceeds `WithMaxBodyBytes(...)`, the client returns `response, gohttp.ErrBodyTooLarge`.
+The response metadata remains populated, and `response.Body` contains the first `limit+1` bytes.
+
 ## Response model
 
 The response contains both payload and metadata:
