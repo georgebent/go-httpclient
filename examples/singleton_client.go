@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	HttpClient = getHttpClient()
+	HttpClient = newHttpClient(nil)
 )
 
-func getHttpClient() gohttp.HttpClient {
+func newHttpClient(transport http.RoundTripper) gohttp.HttpClient {
 	headers := make(http.Header)
 	headers.Set(gomime.HEADER_CONTENT_TYPE, gomime.CONTENT_TYPE_JSON)
 
@@ -23,6 +23,7 @@ func getHttpClient() gohttp.HttpClient {
 		SetResponseTimeout(3 * time.Second).
 		SetMaxBodyBytes(1024 * 1024).
 		SetUserAgent("desktop").
+		SetTransport(transport).
 		Build()
 
 	return client

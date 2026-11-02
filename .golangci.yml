@@ -1,16 +1,54 @@
+version: "2"
+
 run:
   timeout: 3m
   tests: true
 
 linters:
-  disable-all: true
+  default: none
   enable:
+    - bodyclose
+    - copyloopvar
     - errcheck
+    - errorlint
     - gocritic
-    - gofmt
     - govet
     - ineffassign
+    - intrange
     - misspell
+    - modernize
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
     - staticcheck
+    - thelper
     - unconvert
+    - unparam
     - unused
+    - usestdlibvars
+    - usetesting
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    usetesting:
+      context-background: true
+      context-todo: true
+  exclusions:
+    generated: lax
+    presets:
+      - common-false-positives
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    gofmt:
+      rewrite-rules:
+        - pattern: "interface{}"
+          replacement: "any"

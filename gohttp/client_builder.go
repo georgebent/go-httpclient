@@ -14,6 +14,7 @@ type clientBuilder struct {
 	maxIdleConnections int
 	connectionTimeout  time.Duration
 	responseTimeout    time.Duration
+	requestTimeout     time.Duration
 	maxBodyBytes       int64
 	transport          http.RoundTripper
 	checkRedirect      func(req *http.Request, via []*http.Request) error
@@ -28,6 +29,7 @@ type ClientBuilder interface {
 	SetHeaders(headers http.Header) ClientBuilder
 	SetConnectionTimeout(timeout time.Duration) ClientBuilder
 	SetResponseTimeout(timeout time.Duration) ClientBuilder
+	SetRequestTimeout(timeout time.Duration) ClientBuilder
 	SetMaxIdleConnections(maxConnections int) ClientBuilder
 	SetMaxBodyBytes(limit int64) ClientBuilder
 	SetTransport(transport http.RoundTripper) ClientBuilder
@@ -69,6 +71,12 @@ func (c *clientBuilder) SetConnectionTimeout(timeout time.Duration) ClientBuilde
 
 func (c *clientBuilder) SetResponseTimeout(timeout time.Duration) ClientBuilder {
 	c.responseTimeout = timeout
+
+	return c
+}
+
+func (c *clientBuilder) SetRequestTimeout(timeout time.Duration) ClientBuilder {
+	c.requestTimeout = timeout
 
 	return c
 }
@@ -129,24 +137,10 @@ func (c *clientBuilder) clone() *clientBuilder {
 	}
 
 	clone := *c
-	clone.headers = cloneHeaders(c.headers)
+	clone.headers = c.headers.Clone()
 	if c.redirectPolicy != nil {
-		policyCopy := *c.redirectPolicy
-		clone.redirectPolicy = &policyCopy
+		clone.redirectPolicy = new(*c.redirectPolicy)
 	}
 
 	return &clone
-}
-
-func cloneHeaders(headers http.Header) http.Header {
-	if headers == nil {
-		return nil
-	}
-
-	clone := make(http.Header, len(headers))
-	for key, values := range headers {
-		clone[key] = append([]string(nil), values...)
-	}
-
-	return clone
 }

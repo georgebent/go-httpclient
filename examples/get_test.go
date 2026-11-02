@@ -8,13 +8,26 @@ import (
 	"github.com/georgebent/go-httpclient/gohttp_mock"
 )
 
-func TestGetError(t *testing.T) {
-	gohttp_mock.StartMockServer()
+func useMocks(t *testing.T, mocks ...gohttp_mock.Mock) {
+	t.Helper()
 
-	gohttp_mock.AddMock(gohttp_mock.Mock{
+	transport := gohttp_mock.NewTransport()
+	for _, mock := range mocks {
+		transport.AddMock(mock)
+	}
+
+	original := HttpClient
+	HttpClient = newHttpClient(transport)
+	t.Cleanup(func() { HttpClient = original })
+}
+
+func TestGetError(t *testing.T) {
+	errTimeout := errors.New("timeout getting response")
+
+	useMocks(t, gohttp_mock.Mock{
 		Method: http.MethodGet,
 		Url:    "http://localhost",
-		Error:  errors.New("timeout getting responce"),
+		Error:  errTimeout,
 	})
 
 	result, err := Get()
@@ -22,33 +35,25 @@ func TestGetError(t *testing.T) {
 		t.Error("Expect empty body")
 	}
 
-	if err == nil {
-		t.Error("Expect not empty error")
-	}
-
-	if err.Error() != "timeout getting responce" {
-		t.Error("Expect message 'timeout getting responce'")
+	if !errors.Is(err, errTimeout) {
+		t.Fatalf("Expect mocked timeout error, got %v", err)
 	}
 }
 
 func TestGetResponse(t *testing.T) {
-	gohttp_mock.AddMock(gohttp_mock.Mock{
+	useMocks(t, gohttp_mock.Mock{
 		Method:         http.MethodGet,
 		Url:            "http://localhost",
-		ResponseStatus: 200,
+		ResponseStatus: http.StatusOK,
 		ResponseBody:   "Ok",
 	})
 
 	result, err := Get()
-	if result == "" {
-		t.Error("Expect not empty body")
-	}
-
 	if err != nil {
-		t.Error("Expect empty error")
+		t.Fatalf("Expect empty error, got %v", err)
 	}
 
 	if result != "Ok" {
-		t.Error("Expect message 'Ok'")
+		t.Fatalf("Expect message 'Ok', got %q", result)
 	}
 }

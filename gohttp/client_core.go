@@ -6,14 +6,16 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/georgebent/go-httpclient/core"
-	"github.com/georgebent/go-httpclient/gohttp_mock"
 	"github.com/georgebent/go-httpclient/gomime"
 )
 
@@ -21,12 +23,15 @@ const (
 	DEFAULT_MAX_IDDLE_CONNECTIONS = 5
 	DEFAULT_RESPONSE_TIMEOUT      = 5 * time.Second
 	DEFAULT_CONNECTION_TIMEOUT    = 1 * time.Second
+	DEFAULT_REQUEST_TIMEOUT       = 30 * time.Second
+	DEFAULT_MAX_REDIRECTS         = 10
 )
 
 var (
-	ErrRequestBodyConflict = errors.New("request body and body reader are mutually exclusive")
-	ErrUnsupportedMethod   = errors.New("unsupported HTTP method")
-	ErrBodyTooLarge        = errors.New("response body exceeds limit")
+	ErrRequestBodyConflict    = errors.New("request body and body reader are mutually exclusive")
+	ErrUnsupportedContentType = errors.New("unsupported content type for request body")
+	ErrBodyTooLarge           = errors.New("response body exceeds limit")
+	ErrTooManyRedirects       = errors.New("too many redirects")
 )
 
 func (c *Client) do(ctx context.Context, method string, url string, opts ...RequestOption) (*core.Response, error) {
@@ -40,7 +45,7 @@ func (c *Client) do(ctx context.Context, method string, url string, opts ...Requ
 	}
 
 	fullHeaders := c.getRequestHeaders(requestConfig.Headers)
-	requestBody, err := c.getRequestBody(fullHeaders.Get(gomime.HEADER_CONTENT_TYPE), requestConfig)
+	requestBody, err := c.getRequestBody(fullHeaders, requestConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -85,30 +90,27 @@ func (c *Client) do(ctx context.Context, method string, url string, opts ...Requ
 func (c *Client) getRequestHeaders(requestHeaders http.Header) http.Header {
 	result := make(http.Header)
 
-	for header, value := range c.builder.headers {
-		if len(value) > 0 {
-			result.Set(header, value[0])
-		}
-	}
+	copyHeaders(result, c.builder.headers)
+	copyHeaders(result, requestHeaders)
 
-	for header, value := range requestHeaders {
-		if len(value) > 0 {
-			result.Set(header, value[0])
-		}
-	}
-
-	if c.builder.userAgent != "" {
-		if result.Get(gomime.HEADER_USER_AGENT) != "" {
-			return result
-		}
-
+	if c.builder.userAgent != "" && result.Get(gomime.HEADER_USER_AGENT) == "" {
 		result.Set(gomime.HEADER_USER_AGENT, c.builder.userAgent)
 	}
 
 	return result
 }
 
-func (c *Client) getRequestBody(contentType string, cfg *RequestConfig) (io.Reader, error) {
+func copyHeaders(dst, src http.Header) {
+	for header, values := range src {
+		if len(values) == 0 {
+			continue
+		}
+
+		dst[http.CanonicalHeaderKey(header)] = append([]string(nil), values...)
+	}
+}
+
+func (c *Client) getRequestBody(headers http.Header, cfg *RequestConfig) (io.Reader, error) {
 	if cfg.BodyReader != nil && cfg.Body != nil {
 		return nil, ErrRequestBodyConflict
 	}
@@ -117,35 +119,57 @@ func (c *Client) getRequestBody(contentType string, cfg *RequestConfig) (io.Read
 		return cfg.BodyReader, nil
 	}
 
-	if cfg.Body == nil {
+	switch body := cfg.Body.(type) {
+	case nil:
 		return nil, nil
+	case []byte:
+		return bytes.NewReader(body), nil
+	case string:
+		return strings.NewReader(body), nil
+	case io.Reader:
+		return body, nil
 	}
 
-	body := cfg.Body
+	mediaType := getMediaType(headers.Get(gomime.HEADER_CONTENT_TYPE))
+	form, isForm := cfg.Body.(url.Values)
 
-	switch strings.ToLower(contentType) {
-	case gomime.CONTENT_TYPE_JSON:
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
+	switch {
+	case mediaType == "" && isForm:
+		headers.Set(gomime.HEADER_CONTENT_TYPE, gomime.CONTENT_TYPE_FORM)
 
-		return bytes.NewBuffer(payload), nil
-	case gomime.CONTENT_TYPE_XML:
-		payload, err := xml.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
+		return strings.NewReader(form.Encode()), nil
+	case mediaType == "":
+		headers.Set(gomime.HEADER_CONTENT_TYPE, gomime.CONTENT_TYPE_JSON)
 
-		return bytes.NewBuffer(payload), nil
+		return encodeBody(json.Marshal, cfg.Body)
+	case mediaType == gomime.CONTENT_TYPE_FORM && isForm:
+		return strings.NewReader(form.Encode()), nil
+	case mediaType == gomime.CONTENT_TYPE_JSON || strings.HasSuffix(mediaType, "+json"):
+		return encodeBody(json.Marshal, cfg.Body)
+	case mediaType == gomime.CONTENT_TYPE_XML || mediaType == "text/xml" || strings.HasSuffix(mediaType, "+xml"):
+		return encodeBody(xml.Marshal, cfg.Body)
 	default:
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-
-		return bytes.NewBuffer(payload), nil
+		return nil, fmt.Errorf("%w: cannot encode %T as %s", ErrUnsupportedContentType, cfg.Body, mediaType)
 	}
+}
+
+func encodeBody(marshal func(any) ([]byte, error), body any) (io.Reader, error) {
+	payload, err := marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	return bytes.NewReader(payload), nil
+}
+
+func getMediaType(contentType string) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType, _, _ = strings.Cut(contentType, ";")
+		mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	}
+
+	return mediaType
 }
 
 func newRequestConfig(opts ...RequestOption) (*RequestConfig, error) {
@@ -184,7 +208,7 @@ func (c *Client) readResponseBody(body io.Reader, limit int64) ([]byte, bool, er
 	}
 
 	if int64(len(payload)) > limit {
-		return payload, true, nil
+		return payload[:limit], true, nil
 	}
 
 	return payload, false, nil
@@ -228,11 +252,7 @@ func (c *Client) getRedirectCount(response *http.Response) int {
 	return redirects
 }
 
-func (c *Client) getHttpClient() core.HttpClient {
-	if gohttp_mock.MockupServer.IsMockServerEnabled() {
-		return gohttp_mock.MockupServer.GetMockedClient()
-	}
-
+func (c *Client) getHttpClient() *http.Client {
 	c.clientOnce.Do(func() {
 		if c.builder.client != nil {
 			c.coreClient = c.builder.client
@@ -241,23 +261,42 @@ func (c *Client) getHttpClient() core.HttpClient {
 
 		transport := c.builder.transport
 		if transport == nil {
-			transport = &http.Transport{
-				MaxIdleConns:          c.getMaxIdleConnections(),
-				ResponseHeaderTimeout: c.getResponseTimeout(),
-				DialContext: (&net.Dialer{
-					Timeout: c.getConnectionTimeout(),
-				}).DialContext,
-			}
+			transport = c.newTransport()
 		}
 
 		c.coreClient = &http.Client{
-			Timeout:       c.getConnectionTimeout() + c.getResponseTimeout(),
+			Timeout:       c.getRequestTimeout(),
 			Transport:     transport,
 			CheckRedirect: c.getCheckRedirect(),
 		}
 	})
 
 	return c.coreClient
+}
+
+func (c *Client) newTransport() *http.Transport {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		transport = transport.Clone()
+	} else {
+		transport = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	transport.MaxIdleConns = c.getMaxIdleConnections()
+	transport.MaxIdleConnsPerHost = c.getMaxIdleConnections()
+	transport.ResponseHeaderTimeout = c.getResponseTimeout()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   c.getConnectionTimeout(),
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+
+	return transport
 }
 
 func (c *Client) getMaxIdleConnections() int {
@@ -292,6 +331,18 @@ func (c *Client) getConnectionTimeout() time.Duration {
 	return DEFAULT_CONNECTION_TIMEOUT
 }
 
+func (c *Client) getRequestTimeout() time.Duration {
+	if c.builder.requestTimeout > 0 {
+		return c.builder.requestTimeout
+	}
+
+	if c.builder.disabledTimeouts {
+		return 0
+	}
+
+	return DEFAULT_REQUEST_TIMEOUT
+}
+
 func (c *Client) getCheckRedirect() func(req *http.Request, via []*http.Request) error {
 	if c.builder == nil {
 		return nil
@@ -301,15 +352,23 @@ func (c *Client) getCheckRedirect() func(req *http.Request, via []*http.Request)
 		return c.builder.checkRedirect
 	}
 
-	if c.builder.redirectPolicy == nil {
-		return nil
+	var policy RedirectPolicy
+	if c.builder.redirectPolicy != nil {
+		policy = *c.builder.redirectPolicy
 	}
 
-	policy := *c.builder.redirectPolicy
+	maxRedirects := policy.MaxRedirects
+	if maxRedirects == 0 {
+		maxRedirects = DEFAULT_MAX_REDIRECTS
+	}
 
 	return func(req *http.Request, via []*http.Request) error {
-		if policy.MaxRedirects > 0 && len(via) > policy.MaxRedirects {
+		if maxRedirects < 0 {
 			return http.ErrUseLastResponse
+		}
+
+		if len(via) > maxRedirects {
+			return fmt.Errorf("%w: stopped after %d redirects", ErrTooManyRedirects, maxRedirects)
 		}
 
 		if policy.Validate != nil {

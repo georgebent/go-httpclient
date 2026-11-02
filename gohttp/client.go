@@ -63,7 +63,7 @@ func WithHeaders(headers http.Header) RequestOption {
 			return nil
 		}
 
-		cfg.Headers = cloneHeaders(headers)
+		cfg.Headers = headers.Clone()
 
 		return nil
 	}

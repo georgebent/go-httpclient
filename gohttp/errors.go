@@ -5,8 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"net"
-	"net/http"
-	"net/url"
 )
 
 type ErrorKind string
@@ -21,32 +19,47 @@ const (
 )
 
 func IsTimeout(err error) bool {
-	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
 
-	return errors.As(err, &netErr) && netErr.Timeout()
+	netErr, ok := errors.AsType[net.Error](err)
+
+	return ok && netErr.Timeout()
 }
 
 func IsDNS(err error) bool {
-	var dnsErr *net.DNSError
+	_, ok := errors.AsType[*net.DNSError](err)
 
-	return errors.As(err, &dnsErr)
+	return ok
 }
 
 func IsTLS(err error) bool {
-	var recordHeaderErr tls.RecordHeaderError
-	var certificateVerificationErr *tls.CertificateVerificationError
+	if _, ok := errors.AsType[tls.RecordHeaderError](err); ok {
+		return true
+	}
 
-	return errors.As(err, &recordHeaderErr) || errors.As(err, &certificateVerificationErr)
+	if _, ok := errors.AsType[tls.AlertError](err); ok {
+		return true
+	}
+
+	if opErr, ok := errors.AsType[*net.OpError](err); ok && (opErr.Op == "remote error" || opErr.Op == "local error") {
+		return true
+	}
+
+	_, ok := errors.AsType[*tls.CertificateVerificationError](err)
+
+	return ok
 }
 
 func IsConnection(err error) bool {
-	var opErr *net.OpError
+	_, ok := errors.AsType[*net.OpError](err)
 
-	return errors.As(err, &opErr) && !IsDNS(err) && !IsTimeout(err)
+	return ok && !IsDNS(err) && !IsTimeout(err) && !IsTLS(err)
 }
 
 func IsCanceled(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, context.Canceled)
 }
 
 func ClassifyError(err error) ErrorKind {
@@ -64,15 +77,10 @@ func ClassifyError(err error) ErrorKind {
 	case IsConnection(err):
 		return ErrorKindConnection
 	default:
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			return ClassifyError(urlErr.Err)
-		}
-
 		return ErrorKindUnknown
 	}
 }
 
 func IsRedirectError(err error) bool {
-	return errors.Is(err, http.ErrUseLastResponse)
+	return errors.Is(err, ErrTooManyRedirects)
 }

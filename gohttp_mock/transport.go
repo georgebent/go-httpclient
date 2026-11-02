@@ -1,8 +1,6 @@
 package gohttp_mock
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,14 +8,20 @@ import (
 	"sync"
 )
 
+type mockKey struct {
+	method string
+	url    string
+	body   string
+}
+
 type MockTransport struct {
 	mutex sync.RWMutex
-	mocks map[string]*Mock
+	mocks map[mockKey]*Mock
 }
 
 func NewTransport() *MockTransport {
 	return &MockTransport{
-		mocks: make(map[string]*Mock),
+		mocks: make(map[mockKey]*Mock),
 	}
 }
 
@@ -25,14 +29,14 @@ func (t *MockTransport) AddMock(mock Mock) {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.mocks[t.getMockKey(mock.Method, mock.Url, mock.RequestBody)] = &mock
+	t.mocks[newMockKey(mock.Method, mock.Url, mock.RequestBody)] = &mock
 }
 
 func (t *MockTransport) DeleteMocks() {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 
-	t.mocks = make(map[string]*Mock)
+	clear(t.mocks)
 }
 
 func (t *MockTransport) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -50,9 +54,9 @@ func (t *MockTransport) RoundTrip(request *http.Request) (*http.Response, error)
 		return nil, mock.Error
 	}
 
-	responseHeaders := make(http.Header)
-	for key, values := range mock.ResponseHeaders {
-		responseHeaders[key] = append([]string(nil), values...)
+	responseHeaders := mock.ResponseHeaders.Clone()
+	if responseHeaders == nil {
+		responseHeaders = make(http.Header)
 	}
 
 	return &http.Response{
@@ -68,6 +72,10 @@ func (t *MockTransport) RoundTrip(request *http.Request) (*http.Response, error)
 func readRequestBody(request *http.Request) ([]byte, error) {
 	if request == nil {
 		return nil, nil
+	}
+
+	if request.Body != nil {
+		defer request.Body.Close()
 	}
 
 	if request.GetBody != nil {
@@ -92,24 +100,17 @@ func (t *MockTransport) getMock(method string, url string, body string) *Mock {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
 
-	return t.mocks[t.getMockKey(method, url, body)]
+	return t.mocks[newMockKey(method, url, body)]
 }
 
-func (t *MockTransport) getMockKey(method string, url string, body string) string {
-	hasher := md5.New()
-	hasher.Write([]byte(method + url + cleanBody(body)))
-
-	return hex.EncodeToString(hasher.Sum(nil))
+func newMockKey(method string, url string, body string) mockKey {
+	return mockKey{
+		method: method,
+		url:    url,
+		body:   cleanBody(body),
+	}
 }
 
 func cleanBody(body string) string {
-	body = strings.TrimSpace(body)
-	if body == "" {
-		return ""
-	}
-
-	body = strings.ReplaceAll(body, "\t", "")
-	body = strings.ReplaceAll(body, "\n", "")
-
-	return body
+	return strings.NewReplacer("\t", "", "\n", "").Replace(strings.TrimSpace(body))
 }
