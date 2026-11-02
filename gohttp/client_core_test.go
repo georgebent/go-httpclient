@@ -7,9 +7,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/georgebent/go-httpclient/gohttp_mock"
 	"github.com/georgebent/go-httpclient/gomime"
@@ -57,77 +60,175 @@ func TestGetRequestHeaders(t *testing.T) {
 	}
 }
 
+func TestGetRequestHeadersKeepsAllValues(t *testing.T) {
+	commonHeaders := http.Header{}
+	commonHeaders.Add("Accept", "application/json")
+	commonHeaders.Add("Accept", "text/plain")
+	commonHeaders.Add("X-Common", "one")
+
+	client := Client{builder: &clientBuilder{headers: commonHeaders}}
+
+	requestHeaders := http.Header{}
+	requestHeaders.Add("X-Common", "two")
+	requestHeaders.Add("X-Common", "three")
+	requestHeaders["x-lower"] = []string{"value"}
+
+	finalHeaders := client.getRequestHeaders(requestHeaders)
+
+	if got := finalHeaders.Values("Accept"); len(got) != 2 || got[0] != "application/json" || got[1] != "text/plain" {
+		t.Fatalf("expected both Accept values from builder, got %v", got)
+	}
+
+	if got := finalHeaders.Values("X-Common"); len(got) != 2 || got[0] != "two" || got[1] != "three" {
+		t.Fatalf("expected request values to replace builder values, got %v", got)
+	}
+
+	if finalHeaders.Get("X-Lower") != "value" {
+		t.Fatalf("expected non-canonical header key to be canonicalized, got %v", finalHeaders)
+	}
+
+	requestHeaders.Set("X-Common", "changed")
+	if finalHeaders.Get("X-Common") != "two" {
+		t.Fatal("expected request headers to be copied, not shared")
+	}
+}
+
 func TestGetRequestBody(t *testing.T) {
 	client := Client{}
 
-	t.Run("noBodyNilResponse", func(t *testing.T) {
-		body, err := client.getRequestBody("", &RequestConfig{})
+	readBody := func(t *testing.T, body io.Reader) string {
+		t.Helper()
 
+		payload, err := io.ReadAll(body)
 		if err != nil {
-			t.Error("Expected nil err when passing a nil body")
+			t.Fatalf("expected readable body, got %v", err)
+		}
+
+		return string(payload)
+	}
+
+	headersWith := func(contentType string) http.Header {
+		headers := make(http.Header)
+		if contentType != "" {
+			headers.Set(gomime.HEADER_CONTENT_TYPE, contentType)
+		}
+
+		return headers
+	}
+
+	t.Run("noBodyNilResponse", func(t *testing.T) {
+		headers := headersWith("")
+		body, err := client.getRequestBody(headers, &RequestConfig{})
+		if err != nil {
+			t.Fatalf("expected nil err when passing a nil body, got %v", err)
 		}
 
 		if body != nil {
-			t.Error("Expected nil body when passing a nil body")
+			t.Fatal("expected nil body when passing a nil body")
+		}
+
+		if headers.Get(gomime.HEADER_CONTENT_TYPE) != "" {
+			t.Fatal("expected no Content-Type for empty body")
 		}
 	})
 
 	t.Run("BodyJsonResponse", func(t *testing.T) {
-		requestBody := []string{"one", "two"}
-
-		body, err := client.getRequestBody("application/json", &RequestConfig{Body: requestBody})
+		body, err := client.getRequestBody(headersWith("application/json"), &RequestConfig{Body: []string{"one", "two"}})
 		if err != nil {
-			t.Error("Expected nil err when passing a json body")
+			t.Fatalf("expected nil err when passing a json body, got %v", err)
 		}
 
-		payload, err := io.ReadAll(body)
-		if err != nil {
-			t.Fatalf("expected readable body, got %v", err)
-		}
-
-		if string(payload) != `["one","two"]` {
-			t.Error("Wrong body when passing a json body")
+		if got := readBody(t, body); got != `["one","two"]` {
+			t.Fatalf("wrong json body: %q", got)
 		}
 	})
 
 	t.Run("BodyXmlResponse", func(t *testing.T) {
-		requestBody := []string{"one", "two"}
-
-		body, err := client.getRequestBody("application/xml", &RequestConfig{Body: requestBody})
+		body, err := client.getRequestBody(headersWith("application/xml"), &RequestConfig{Body: []string{"one", "two"}})
 		if err != nil {
-			t.Error("Expected nil err when passing a json body")
+			t.Fatalf("expected nil err when passing a xml body, got %v", err)
 		}
 
-		payload, err := io.ReadAll(body)
-		if err != nil {
-			t.Fatalf("expected readable body, got %v", err)
-		}
-
-		if string(payload) != "<string>one</string><string>two</string>" {
-			t.Error("Wrong body when passing a json body")
+		if got := readBody(t, body); got != "<string>one</string><string>two</string>" {
+			t.Fatalf("wrong xml body: %q", got)
 		}
 	})
 
-	t.Run("BodyDefaultResponse", func(t *testing.T) {
-		requestBody := []string{"three", "four"}
+	t.Run("XmlContentTypeWithParamsAndVariants", func(t *testing.T) {
+		for _, contentType := range []string{
+			"application/xml; charset=utf-8",
+			"Application/XML",
+			"text/xml",
+			"application/atom+xml",
+		} {
+			body, err := client.getRequestBody(headersWith(contentType), &RequestConfig{Body: []string{"one"}})
+			if err != nil {
+				t.Fatalf("%s: expected nil err, got %v", contentType, err)
+			}
 
-		body, err := client.getRequestBody("", &RequestConfig{Body: requestBody})
+			if got := readBody(t, body); got != "<string>one</string>" {
+				t.Fatalf("%s: expected xml body, got %q", contentType, got)
+			}
+		}
+	})
+
+	t.Run("JsonContentTypeWithParams", func(t *testing.T) {
+		headers := headersWith("application/json; charset=utf-8")
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: []string{"one"}})
 		if err != nil {
-			t.Error("Expected nil err when passing a json body")
+			t.Fatalf("expected nil err, got %v", err)
 		}
 
-		payload, err := io.ReadAll(body)
-		if err != nil {
-			t.Fatalf("expected readable body, got %v", err)
+		if got := readBody(t, body); got != `["one"]` {
+			t.Fatalf("expected json body, got %q", got)
 		}
 
-		if string(payload) != `["three","four"]` {
-			t.Error("Wrong body when passing a json body")
+		if headers.Get(gomime.HEADER_CONTENT_TYPE) != "application/json; charset=utf-8" {
+			t.Fatalf("expected Content-Type to stay as set, got %q", headers.Get(gomime.HEADER_CONTENT_TYPE))
+		}
+	})
+
+	t.Run("BodyDefaultResponseSetsJsonContentType", func(t *testing.T) {
+		headers := headersWith("")
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: []string{"three", "four"}})
+		if err != nil {
+			t.Fatalf("expected nil err when passing a json body, got %v", err)
+		}
+
+		if got := readBody(t, body); got != `["three","four"]` {
+			t.Fatalf("wrong default body: %q", got)
+		}
+
+		if headers.Get(gomime.HEADER_CONTENT_TYPE) != gomime.CONTENT_TYPE_JSON {
+			t.Fatalf("expected JSON Content-Type to be set, got %q", headers.Get(gomime.HEADER_CONTENT_TYPE))
+		}
+	})
+
+	t.Run("RawBytesAndStringAreSentAsIs", func(t *testing.T) {
+		for _, raw := range []any{[]byte("raw-bytes"), "raw-string"} {
+			headers := headersWith("text/plain")
+			body, err := client.getRequestBody(headers, &RequestConfig{Body: raw})
+			if err != nil {
+				t.Fatalf("expected nil err, got %v", err)
+			}
+
+			want := raw
+			if b, ok := raw.([]byte); ok {
+				want = string(b)
+			}
+
+			if got := readBody(t, body); got != want {
+				t.Fatalf("expected raw body %q, got %q", want, got)
+			}
+
+			if headers.Get(gomime.HEADER_CONTENT_TYPE) != "text/plain" {
+				t.Fatalf("expected Content-Type to stay as set, got %q", headers.Get(gomime.HEADER_CONTENT_TYPE))
+			}
 		}
 	})
 
 	t.Run("BodyConflictReturnsError", func(t *testing.T) {
-		_, err := client.getRequestBody("", &RequestConfig{
+		_, err := client.getRequestBody(headersWith(""), &RequestConfig{
 			Body:       map[string]string{"name": "test"},
 			BodyReader: strings.NewReader("raw"),
 		})
@@ -136,6 +237,25 @@ func TestGetRequestBody(t *testing.T) {
 			t.Fatalf("expected ErrRequestBodyConflict, got %v", err)
 		}
 	})
+}
+
+func TestDoSetsJsonContentTypeWhenMissing(t *testing.T) {
+	var gotContentType, gotBody string
+	client := NewBuilder().SetTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		gotContentType = request.Header.Get(gomime.HEADER_CONTENT_TYPE)
+		payload, _ := io.ReadAll(request.Body)
+		gotBody = string(payload)
+
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
+	})).Build()
+
+	if _, err := client.Post(context.Background(), "http://example.test/", WithBody(map[string]string{"a": "b"})); err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+
+	if gotContentType != gomime.CONTENT_TYPE_JSON || gotBody != `{"a":"b"}` {
+		t.Fatalf("expected JSON body with JSON Content-Type, got %q %q", gotContentType, gotBody)
+	}
 }
 
 func TestResponseHeadersComeFromServerResponse(t *testing.T) {
@@ -174,16 +294,14 @@ func TestResponseHeadersComeFromServerResponse(t *testing.T) {
 }
 
 func TestPutAndPatchSendRequestBody(t *testing.T) {
-	gohttp_mock.StartMockServer()
-	defer gohttp_mock.StopMockServer()
-	gohttp_mock.MockupServer.DeleteMocks()
+	mockTransport := gohttp_mock.NewTransport()
 
 	headers := make(http.Header)
 	headers.Set(gomime.HEADER_CONTENT_TYPE, gomime.CONTENT_TYPE_JSON)
 
-	client := NewBuilder().SetHeaders(headers).Build()
+	client := NewBuilder().SetHeaders(headers).SetTransport(mockTransport).Build()
 
-	gohttp_mock.AddMock(gohttp_mock.Mock{
+	mockTransport.AddMock(gohttp_mock.Mock{
 		Method:         http.MethodPut,
 		Url:            "http://localhost/put",
 		RequestBody:    `{"name":"put"}`,
@@ -200,8 +318,8 @@ func TestPutAndPatchSendRequestBody(t *testing.T) {
 		t.Fatalf("expected PUT mock response, got %q", putResponse.BodyString())
 	}
 
-	gohttp_mock.MockupServer.DeleteMocks()
-	gohttp_mock.AddMock(gohttp_mock.Mock{
+	mockTransport.DeleteMocks()
+	mockTransport.AddMock(gohttp_mock.Mock{
 		Method:         http.MethodPatch,
 		Url:            "http://localhost/patch",
 		RequestBody:    `{"name":"patch"}`,
@@ -220,18 +338,15 @@ func TestPutAndPatchSendRequestBody(t *testing.T) {
 }
 
 func TestMockResponseIncludesHTTPStatusText(t *testing.T) {
-	gohttp_mock.StartMockServer()
-	defer gohttp_mock.StopMockServer()
-	gohttp_mock.MockupServer.DeleteMocks()
-
-	gohttp_mock.AddMock(gohttp_mock.Mock{
+	mockTransport := gohttp_mock.NewTransport()
+	mockTransport.AddMock(gohttp_mock.Mock{
 		Method:         http.MethodGet,
 		Url:            "http://localhost/status",
 		ResponseStatus: http.StatusCreated,
 		ResponseBody:   "created",
 	})
 
-	client := NewBuilder().Build()
+	client := NewBuilder().SetTransport(mockTransport).Build()
 
 	response, err := client.Get(context.Background(), "http://localhost/status")
 	if err != nil {
@@ -601,6 +716,34 @@ func TestRedirectPolicyStopsAfterLimit(t *testing.T) {
 	}
 }
 
+func TestRedirectPolicyWithoutMaxRedirectsUsesDefaultLimit(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Redirect(w, r, "/", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client := NewBuilder().SetRedirectPolicy(RedirectPolicy{
+		Validate: func(req *http.Request, via []*http.Request) error {
+			return nil
+		},
+	}).Build()
+
+	response, err := client.Get(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("expected last redirect response without error, got %v", err)
+	}
+
+	if response.StatusCode != http.StatusFound {
+		t.Fatalf("expected last 302 response, got %d", response.StatusCode)
+	}
+
+	if got := requests.Load(); got != DEFAULT_MAX_REDIRECTS+1 {
+		t.Fatalf("expected %d requests, got %d", DEFAULT_MAX_REDIRECTS+1, got)
+	}
+}
+
 func TestSetCheckRedirectIsUsed(t *testing.T) {
 	expectedErr := errors.New("stop redirect")
 	client := NewBuilder().SetCheckRedirect(func(req *http.Request, via []*http.Request) error {
@@ -692,3 +835,102 @@ type timeoutNetError struct{}
 func (timeoutNetError) Error() string   { return "timeout" }
 func (timeoutNetError) Timeout() bool   { return true }
 func (timeoutNetError) Temporary() bool { return true }
+
+func TestDeadlineErrorsAreClassifiedAsTimeout(t *testing.T) {
+	if IsCanceled(context.DeadlineExceeded) {
+		t.Fatal("expected deadline exceeded not to be treated as canceled")
+	}
+
+	if ClassifyError(context.DeadlineExceeded) != ErrorKindTimeout {
+		t.Fatalf("expected timeout classification, got %q", ClassifyError(context.DeadlineExceeded))
+	}
+
+	canceledErr := &url.Error{Op: "Get", URL: "http://example.test", Err: context.Canceled}
+	if ClassifyError(canceledErr) != ErrorKindCanceled {
+		t.Fatalf("expected wrapped cancel to be canceled, got %q", ClassifyError(canceledErr))
+	}
+
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := NewBuilder().Build().Get(ctx, server.URL)
+	if ClassifyError(err) != ErrorKindTimeout {
+		t.Fatalf("expected context deadline to be classified as timeout, got %q (%v)", ClassifyError(err), err)
+	}
+}
+
+func TestDefaultTransportKeepsStandardSettings(t *testing.T) {
+	client := NewBuilder().SetMaxIdleConnections(7).Build().(*Client)
+	httpClient := client.getHttpClient()
+
+	transport, ok := httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", httpClient.Transport)
+	}
+
+	if transport.Proxy == nil {
+		t.Fatal("expected proxy from environment to be kept")
+	}
+
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("expected HTTP/2 to stay enabled")
+	}
+
+	if transport.TLSHandshakeTimeout == 0 || transport.IdleConnTimeout == 0 {
+		t.Fatal("expected TLS handshake and idle connection timeouts to be set")
+	}
+
+	if transport.MaxIdleConns != 7 || transport.MaxIdleConnsPerHost != 7 {
+		t.Fatalf("expected idle connection limits of 7, got %d/%d", transport.MaxIdleConns, transport.MaxIdleConnsPerHost)
+	}
+
+	if transport.ResponseHeaderTimeout != DEFAULT_RESPONSE_TIMEOUT {
+		t.Fatalf("expected default response header timeout, got %v", transport.ResponseHeaderTimeout)
+	}
+
+	if httpClient.Timeout != 0 {
+		t.Fatalf("expected no whole-request timeout by default, got %v", httpClient.Timeout)
+	}
+
+	if http.DefaultTransport.(*http.Transport) == transport {
+		t.Fatal("expected default transport to be cloned, not shared")
+	}
+}
+
+func TestResponseTimeoutDoesNotLimitBodyReading(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("slow-body"))
+	}))
+	defer server.Close()
+
+	client := NewBuilder().
+		SetConnectionTimeout(50 * time.Millisecond).
+		SetResponseTimeout(50 * time.Millisecond).
+		Build()
+
+	response, err := client.Get(context.Background(), server.URL)
+	if err != nil {
+		t.Fatalf("expected slow body to be read after headers arrived, got %v", err)
+	}
+
+	if response.BodyString() != "slow-body" {
+		t.Fatalf("expected full body, got %q", response.BodyString())
+	}
+
+	limited := NewBuilder().SetRequestTimeout(50 * time.Millisecond).Build()
+
+	_, err = limited.Get(context.Background(), server.URL)
+	if ClassifyError(err) != ErrorKindTimeout {
+		t.Fatalf("expected request timeout to stop slow body, got %q (%v)", ClassifyError(err), err)
+	}
+}

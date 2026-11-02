@@ -27,11 +27,25 @@ client := gohttp.NewBuilder().
 	SetHeaders(headers).
 	SetConnectionTimeout(2 * time.Second).
 	SetResponseTimeout(3 * time.Second).
+	SetRequestTimeout(30 * time.Second).
 	SetMaxIdleConnections(10).
 	SetMaxBodyBytes(1024 * 1024).
 	SetUserAgent("your-user-agent").
 	Build()
 ```
+
+Timeouts:
+
+- `SetConnectionTimeout` limits dialing a connection (default `1s`).
+- `SetResponseTimeout` limits waiting for response headers after the request is sent (default `5s`). It does not limit reading the body.
+- `SetRequestTimeout` limits the whole request, including redirects and reading the body. There is no default; use it or a `context` deadline for downloads of unknown size.
+- `DisableTimeouts(true)` turns off the default connection and response timeouts.
+
+Connection and response timeouts apply to the built-in transport only. With `SetTransport(...)`, only `SetRequestTimeout` and the request context apply.
+
+The built-in transport is a clone of `http.DefaultTransport`, so proxy settings from the environment, HTTP/2, and TLS handshake timeouts work as in the standard library.
+
+Builder headers are sent with every request. A request header with the same name replaces the builder header; all values of repeated headers are kept.
 
 ## Perform requests
 
@@ -80,6 +94,12 @@ Available request options:
 
 `WithBody(...)` and `WithBodyReader(...)` are mutually exclusive.
 
+`WithBody(...)` encodes the body as follows:
+
+- `[]byte` and `string` are sent as is.
+- For XML content types (`application/xml`, `text/xml`, `*+xml`, with any parameters such as `charset`), the body is encoded as XML.
+- Otherwise the body is encoded as JSON. If no `Content-Type` is set, `application/json` is added.
+
 If the response body exceeds `WithMaxBodyBytes(...)`, the client returns `response, gohttp.ErrBodyTooLarge`.
 The response metadata remains populated, and `response.Body` contains the first `limit+1` bytes.
 
@@ -116,6 +136,8 @@ client := gohttp.NewBuilder().
 	Build()
 ```
 
+When the redirect limit is reached, the last redirect response is returned without an error. If `MaxRedirects` is `0`, the limit is 10.
+
 If you provide `SetHttpClient(...)`, it has the highest priority. Builder transport and redirect settings are not overlaid onto that client.
 
 ## Error helpers
@@ -132,9 +154,11 @@ if gohttp.IsCanceled(err) { ... }
 kind := gohttp.ClassifyError(err)
 ```
 
+`IsTimeout` covers network timeouts, `SetRequestTimeout`, and expired `context` deadlines. `IsCanceled` covers only `context` cancellation.
+
 ## Testing
 
-The recommended path is transport-level mocking.
+Mocks are set per client through `SetTransport(...)`, so the request goes through the same redirect and timeout handling as in production.
 
 ```go
 mockTransport := gohttp_mock.NewTransport()
@@ -155,20 +179,7 @@ client := gohttp.NewBuilder().
 response, err := client.Get(context.Background(), "https://api.example.com/health")
 ```
 
-Legacy global mocking is still available for backward compatibility:
-
-```go
-gohttp_mock.StartMockServer()
-defer gohttp_mock.StopMockServer()
-gohttp_mock.MockupServer.DeleteMocks()
-
-gohttp_mock.AddMock(gohttp_mock.Mock{
-	Method:         http.MethodGet,
-	Url:            "http://localhost",
-	ResponseStatus: http.StatusOK,
-	ResponseBody:   "ok",
-})
-```
+The global mock server (`StartMockServer`, `StopMockServer`, `MockupServer`, `gohttp_mock.AddMock`) was removed. To mock a shared client, build it from a function that accepts a transport, as in `examples/singleton_client.go` and `examples/get_test.go`.
 
 ## Examples
 

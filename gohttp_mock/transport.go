@@ -70,6 +70,10 @@ func readRequestBody(request *http.Request) ([]byte, error) {
 		return nil, nil
 	}
 
+	if request.Body != nil {
+		defer request.Body.Close()
+	}
+
 	if request.GetBody != nil {
 		requestBody, err := request.GetBody()
 		if err != nil {

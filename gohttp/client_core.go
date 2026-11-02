@@ -7,13 +7,13 @@ import (
 	"encoding/xml"
 	"errors"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/georgebent/go-httpclient/core"
-	"github.com/georgebent/go-httpclient/gohttp_mock"
 	"github.com/georgebent/go-httpclient/gomime"
 )
 
@@ -21,6 +21,7 @@ const (
 	DEFAULT_MAX_IDDLE_CONNECTIONS = 5
 	DEFAULT_RESPONSE_TIMEOUT      = 5 * time.Second
 	DEFAULT_CONNECTION_TIMEOUT    = 1 * time.Second
+	DEFAULT_MAX_REDIRECTS         = 10
 )
 
 var (
@@ -40,7 +41,7 @@ func (c *Client) do(ctx context.Context, method string, url string, opts ...Requ
 	}
 
 	fullHeaders := c.getRequestHeaders(requestConfig.Headers)
-	requestBody, err := c.getRequestBody(fullHeaders.Get(gomime.HEADER_CONTENT_TYPE), requestConfig)
+	requestBody, err := c.getRequestBody(fullHeaders, requestConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -85,30 +86,27 @@ func (c *Client) do(ctx context.Context, method string, url string, opts ...Requ
 func (c *Client) getRequestHeaders(requestHeaders http.Header) http.Header {
 	result := make(http.Header)
 
-	for header, value := range c.builder.headers {
-		if len(value) > 0 {
-			result.Set(header, value[0])
-		}
-	}
+	copyHeaders(result, c.builder.headers)
+	copyHeaders(result, requestHeaders)
 
-	for header, value := range requestHeaders {
-		if len(value) > 0 {
-			result.Set(header, value[0])
-		}
-	}
-
-	if c.builder.userAgent != "" {
-		if result.Get(gomime.HEADER_USER_AGENT) != "" {
-			return result
-		}
-
+	if c.builder.userAgent != "" && result.Get(gomime.HEADER_USER_AGENT) == "" {
 		result.Set(gomime.HEADER_USER_AGENT, c.builder.userAgent)
 	}
 
 	return result
 }
 
-func (c *Client) getRequestBody(contentType string, cfg *RequestConfig) (io.Reader, error) {
+func copyHeaders(dst, src http.Header) {
+	for header, values := range src {
+		if len(values) == 0 {
+			continue
+		}
+
+		dst[http.CanonicalHeaderKey(header)] = append([]string(nil), values...)
+	}
+}
+
+func (c *Client) getRequestBody(headers http.Header, cfg *RequestConfig) (io.Reader, error) {
 	if cfg.BodyReader != nil && cfg.Body != nil {
 		return nil, ErrRequestBodyConflict
 	}
@@ -117,35 +115,46 @@ func (c *Client) getRequestBody(contentType string, cfg *RequestConfig) (io.Read
 		return cfg.BodyReader, nil
 	}
 
-	if cfg.Body == nil {
+	switch body := cfg.Body.(type) {
+	case nil:
 		return nil, nil
+	case []byte:
+		return bytes.NewReader(body), nil
+	case string:
+		return strings.NewReader(body), nil
 	}
 
-	body := cfg.Body
+	contentType := headers.Get(gomime.HEADER_CONTENT_TYPE)
 
-	switch strings.ToLower(contentType) {
-	case gomime.CONTENT_TYPE_JSON:
-		payload, err := json.Marshal(body)
+	if isXMLContentType(contentType) {
+		payload, err := xml.Marshal(cfg.Body)
 		if err != nil {
 			return nil, err
 		}
 
-		return bytes.NewBuffer(payload), nil
-	case gomime.CONTENT_TYPE_XML:
-		payload, err := xml.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-
-		return bytes.NewBuffer(payload), nil
-	default:
-		payload, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-
-		return bytes.NewBuffer(payload), nil
+		return bytes.NewReader(payload), nil
 	}
+
+	payload, err := json.Marshal(cfg.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if contentType == "" {
+		headers.Set(gomime.HEADER_CONTENT_TYPE, gomime.CONTENT_TYPE_JSON)
+	}
+
+	return bytes.NewReader(payload), nil
+}
+
+func isXMLContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		mediaType, _, _ = strings.Cut(contentType, ";")
+		mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	}
+
+	return mediaType == gomime.CONTENT_TYPE_XML || mediaType == "text/xml" || strings.HasSuffix(mediaType, "+xml")
 }
 
 func newRequestConfig(opts ...RequestOption) (*RequestConfig, error) {
@@ -228,11 +237,7 @@ func (c *Client) getRedirectCount(response *http.Response) int {
 	return redirects
 }
 
-func (c *Client) getHttpClient() core.HttpClient {
-	if gohttp_mock.MockupServer.IsMockServerEnabled() {
-		return gohttp_mock.MockupServer.GetMockedClient()
-	}
-
+func (c *Client) getHttpClient() *http.Client {
 	c.clientOnce.Do(func() {
 		if c.builder.client != nil {
 			c.coreClient = c.builder.client
@@ -241,23 +246,42 @@ func (c *Client) getHttpClient() core.HttpClient {
 
 		transport := c.builder.transport
 		if transport == nil {
-			transport = &http.Transport{
-				MaxIdleConns:          c.getMaxIdleConnections(),
-				ResponseHeaderTimeout: c.getResponseTimeout(),
-				DialContext: (&net.Dialer{
-					Timeout: c.getConnectionTimeout(),
-				}).DialContext,
-			}
+			transport = c.newTransport()
 		}
 
 		c.coreClient = &http.Client{
-			Timeout:       c.getConnectionTimeout() + c.getResponseTimeout(),
+			Timeout:       c.builder.requestTimeout,
 			Transport:     transport,
 			CheckRedirect: c.getCheckRedirect(),
 		}
 	})
 
 	return c.coreClient
+}
+
+func (c *Client) newTransport() *http.Transport {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if ok {
+		transport = transport.Clone()
+	} else {
+		transport = &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ForceAttemptHTTP2:     true,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	transport.MaxIdleConns = c.getMaxIdleConnections()
+	transport.MaxIdleConnsPerHost = c.getMaxIdleConnections()
+	transport.ResponseHeaderTimeout = c.getResponseTimeout()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   c.getConnectionTimeout(),
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+
+	return transport
 }
 
 func (c *Client) getMaxIdleConnections() int {
@@ -306,9 +330,13 @@ func (c *Client) getCheckRedirect() func(req *http.Request, via []*http.Request)
 	}
 
 	policy := *c.builder.redirectPolicy
+	maxRedirects := policy.MaxRedirects
+	if maxRedirects <= 0 {
+		maxRedirects = DEFAULT_MAX_REDIRECTS
+	}
 
 	return func(req *http.Request, via []*http.Request) error {
-		if policy.MaxRedirects > 0 && len(via) > policy.MaxRedirects {
+		if len(via) > maxRedirects {
 			return http.ErrUseLastResponse
 		}
 

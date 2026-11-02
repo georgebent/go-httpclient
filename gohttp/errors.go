@@ -21,6 +21,10 @@ const (
 )
 
 func IsTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
 	var netErr net.Error
 
 	return errors.As(err, &netErr) && netErr.Timeout()
@@ -46,7 +50,7 @@ func IsConnection(err error) bool {
 }
 
 func IsCanceled(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, context.Canceled)
 }
 
 func ClassifyError(err error) ErrorKind {
