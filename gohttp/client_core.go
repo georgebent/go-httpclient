@@ -25,6 +25,7 @@ const (
 	DEFAULT_CONNECTION_TIMEOUT    = 1 * time.Second
 	DEFAULT_REQUEST_TIMEOUT       = 30 * time.Second
 	DEFAULT_MAX_REDIRECTS         = 10
+	DEFAULT_MAX_BODY_BYTES        = 10 << 20
 )
 
 var (
@@ -215,15 +216,23 @@ func (c *Client) readResponseBody(body io.Reader, limit int64) ([]byte, bool, er
 }
 
 func (c *Client) getMaxBodyBytes(cfg *RequestConfig) int64 {
-	if cfg != nil && cfg.MaxBodyBytes > 0 {
-		return cfg.MaxBodyBytes
+	var limit int64
+	if c.builder != nil {
+		limit = c.builder.maxBodyBytes
 	}
 
-	if c.builder != nil && c.builder.maxBodyBytes > 0 {
-		return c.builder.maxBodyBytes
+	if cfg != nil && cfg.MaxBodyBytes != 0 {
+		limit = cfg.MaxBodyBytes
 	}
 
-	return 0
+	switch {
+	case limit < 0:
+		return 0
+	case limit == 0:
+		return DEFAULT_MAX_BODY_BYTES
+	default:
+		return limit
+	}
 }
 
 func (c *Client) getFinalURL(response *http.Response) string {

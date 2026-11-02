@@ -950,14 +950,14 @@ func TestResponseTimeoutDoesNotLimitBodyReading(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(time.Second)
 		_, _ = w.Write([]byte("slow-body"))
 	}))
 	defer server.Close()
 
 	client := NewBuilder().
-		SetConnectionTimeout(50 * time.Millisecond).
-		SetResponseTimeout(50 * time.Millisecond).
+		SetConnectionTimeout(300 * time.Millisecond).
+		SetResponseTimeout(300 * time.Millisecond).
 		Build()
 
 	response, err := client.Get(t.Context(), server.URL)
@@ -969,7 +969,7 @@ func TestResponseTimeoutDoesNotLimitBodyReading(t *testing.T) {
 		t.Fatalf("expected full body, got %q", response.BodyString())
 	}
 
-	limited := NewBuilder().SetRequestTimeout(50 * time.Millisecond).Build()
+	limited := NewBuilder().SetRequestTimeout(300 * time.Millisecond).Build()
 
 	_, err = limited.Get(t.Context(), server.URL)
 	if ClassifyError(err) != ErrorKindTimeout {
@@ -1123,5 +1123,56 @@ func TestGetRequestBodyReaderFormAndUnsupportedTypes(t *testing.T) {
 				t.Fatalf("expected ErrUnsupportedContentType, got %v", err)
 			}
 		})
+	}
+}
+
+func TestMaxBodyBytesDefaultsAndOverrides(t *testing.T) {
+	cases := map[string]struct {
+		builderLimit int64
+		requestLimit int64
+		want         int64
+	}{
+		"default":                      {0, 0, DEFAULT_MAX_BODY_BYTES},
+		"builder limit":                {5, 0, 5},
+		"request overrides builder":    {5, 9, 9},
+		"builder unlimited":            {-1, 0, 0},
+		"request unlimited":            {5, -1, 0},
+		"request limit over unlimited": {-1, 9, 9},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			client := NewBuilder().SetMaxBodyBytes(tc.builderLimit).Build().(*Client)
+
+			if got := client.getMaxBodyBytes(&RequestConfig{MaxBodyBytes: tc.requestLimit}); got != tc.want {
+				t.Fatalf("expected limit %d, got %d", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestResponseBodyIsBoundedByDefault(t *testing.T) {
+	size := DEFAULT_MAX_BODY_BYTES + 1024
+	client := NewBuilder().SetTransport(roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(make([]byte, size))),
+			Request:    request,
+		}, nil
+	})).Build()
+
+	response, err := client.Get(t.Context(), "http://example.test/big")
+	if !errors.Is(err, ErrBodyTooLarge) {
+		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
+	}
+
+	if len(response.Body) != DEFAULT_MAX_BODY_BYTES {
+		t.Fatalf("expected body truncated to default limit, got %d bytes", len(response.Body))
+	}
+
+	unlimited, err := client.Get(t.Context(), "http://example.test/big", WithMaxBodyBytes(-1))
+	if err != nil || len(unlimited.Body) != size {
+		t.Fatalf("expected full %d bytes without error, got %d bytes, err %v", size, len(unlimited.Body), err)
 	}
 }

@@ -106,7 +106,9 @@ Available request options:
   - JSON with an added `Content-Type: application/json` when no `Content-Type` is set.
 - Any other combination fails with `gohttp.ErrUnsupportedContentType`, for example a struct with `text/plain`. Send such bodies as `[]byte`, `string`, or a reader.
 
-If the response body exceeds `WithMaxBodyBytes(...)`, the client returns `response, gohttp.ErrBodyTooLarge`.
+Response bodies are limited to 10 MiB by default. Set another limit with `SetMaxBodyBytes(...)` on the builder or `WithMaxBodyBytes(...)` per request; a negative value removes the limit.
+
+If the response body exceeds the limit, the client returns `response, gohttp.ErrBodyTooLarge`.
 The response metadata remains populated, and `response.Body` contains the first `limit` bytes.
 
 ## Response model
