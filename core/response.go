@@ -25,6 +25,6 @@ func (r *Response) BodyString() string {
 	return string(r.Body)
 }
 
-func (r *Response) UnmarshalJson(target interface{}) error {
+func (r *Response) UnmarshalJson(target any) error {
 	return json.Unmarshal(r.BodyBytes(), target)
 }

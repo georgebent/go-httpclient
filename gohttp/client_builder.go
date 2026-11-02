@@ -137,24 +137,10 @@ func (c *clientBuilder) clone() *clientBuilder {
 	}
 
 	clone := *c
-	clone.headers = cloneHeaders(c.headers)
+	clone.headers = c.headers.Clone()
 	if c.redirectPolicy != nil {
-		policyCopy := *c.redirectPolicy
-		clone.redirectPolicy = &policyCopy
+		clone.redirectPolicy = new(*c.redirectPolicy)
 	}
 
 	return &clone
-}
-
-func cloneHeaders(headers http.Header) http.Header {
-	if headers == nil {
-		return nil
-	}
-
-	clone := make(http.Header, len(headers))
-	for key, values := range headers {
-		clone[key] = append([]string(nil), values...)
-	}
-
-	return clone
 }

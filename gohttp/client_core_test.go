@@ -1,6 +1,7 @@
 package gohttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -233,7 +234,7 @@ func TestGetRequestBody(t *testing.T) {
 			BodyReader: strings.NewReader("raw"),
 		})
 
-		if err != ErrRequestBodyConflict {
+		if !errors.Is(err, ErrRequestBodyConflict) {
 			t.Fatalf("expected ErrRequestBodyConflict, got %v", err)
 		}
 	})
@@ -249,7 +250,7 @@ func TestDoSetsJsonContentTypeWhenMissing(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: request}, nil
 	})).Build()
 
-	if _, err := client.Post(context.Background(), "http://example.test/", WithBody(map[string]string{"a": "b"})); err != nil {
+	if _, err := client.Post(t.Context(), "http://example.test/", WithBody(map[string]string{"a": "b"})); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 
@@ -279,7 +280,7 @@ func TestResponseHeadersComeFromServerResponse(t *testing.T) {
 	requestHeaders := make(http.Header)
 	requestHeaders.Set("X-Request-Id", "req-123")
 
-	response, err := client.Get(context.Background(), "http://example.test/resource", WithHeaders(requestHeaders))
+	response, err := client.Get(t.Context(), "http://example.test/resource", WithHeaders(requestHeaders))
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -309,7 +310,7 @@ func TestPutAndPatchSendRequestBody(t *testing.T) {
 		ResponseBody:   "put-ok",
 	})
 
-	putResponse, err := client.Put(context.Background(), "http://localhost/put", WithBody(map[string]string{"name": "put"}))
+	putResponse, err := client.Put(t.Context(), "http://localhost/put", WithBody(map[string]string{"name": "put"}))
 	if err != nil {
 		t.Fatalf("expected nil error for PUT, got %v", err)
 	}
@@ -327,7 +328,7 @@ func TestPutAndPatchSendRequestBody(t *testing.T) {
 		ResponseBody:   "patch-ok",
 	})
 
-	patchResponse, err := client.Patch(context.Background(), "http://localhost/patch", WithBody(map[string]string{"name": "patch"}))
+	patchResponse, err := client.Patch(t.Context(), "http://localhost/patch", WithBody(map[string]string{"name": "patch"}))
 	if err != nil {
 		t.Fatalf("expected nil error for PATCH, got %v", err)
 	}
@@ -348,7 +349,7 @@ func TestMockResponseIncludesHTTPStatusText(t *testing.T) {
 
 	client := NewBuilder().SetTransport(mockTransport).Build()
 
-	response, err := client.Get(context.Background(), "http://localhost/status")
+	response, err := client.Get(t.Context(), "http://localhost/status")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -383,11 +384,11 @@ func TestBuildSnapshotsBuilderConfiguration(t *testing.T) {
 	builder.SetUserAgent("second-agent")
 	secondClient := builder.Build()
 
-	if _, err := firstClient.Get(context.Background(), "http://example.test/first"); err != nil {
+	if _, err := firstClient.Get(t.Context(), "http://example.test/first"); err != nil {
 		t.Fatalf("expected nil error for first client, got %v", err)
 	}
 
-	if _, err := secondClient.Get(context.Background(), "http://example.test/second"); err != nil {
+	if _, err := secondClient.Get(t.Context(), "http://example.test/second"); err != nil {
 		t.Fatalf("expected nil error for second client, got %v", err)
 	}
 
@@ -439,7 +440,7 @@ func TestDoWithContextUsesOptions(t *testing.T) {
 	requestHeaders := make(http.Header)
 	requestHeaders.Set("X-Request-Id", "req-123")
 
-	response, err := client.Do(context.Background(), http.MethodPost, "http://example.test/resource",
+	response, err := client.Do(t.Context(), http.MethodPost, "http://example.test/resource",
 		WithHeaders(requestHeaders),
 		WithBody(map[string]string{"name": "codex"}),
 	)
@@ -463,7 +464,7 @@ func TestDoWithCanceledContextStopsRequest(t *testing.T) {
 
 	client := NewBuilder().SetHttpClient(httpClient).Build()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	_, err := client.Do(ctx, http.MethodGet, "http://example.test/resource")
@@ -498,7 +499,7 @@ func TestResponseMetadataIsPopulated(t *testing.T) {
 
 	client := NewBuilder().SetHttpClient(httpClient).Build()
 
-	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/final")
+	response, err := client.Do(t.Context(), http.MethodGet, "http://example.test/final")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -549,7 +550,7 @@ func TestBuilderMaxBodyBytesLimitsResponse(t *testing.T) {
 
 	client := NewBuilder().SetHttpClient(httpClient).SetMaxBodyBytes(4).Build()
 
-	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource")
+	response, err := client.Do(t.Context(), http.MethodGet, "http://example.test/resource")
 	if !errors.Is(err, ErrBodyTooLarge) {
 		t.Fatalf("expected ErrBodyTooLarge, got %v", err)
 	}
@@ -582,12 +583,8 @@ func TestBuilderMaxBodyBytesLimitsResponse(t *testing.T) {
 		t.Fatalf("expected positive duration, got %v", response.Duration)
 	}
 
-	if len(response.Body) != 5 {
-		t.Fatalf("expected truncated body of 5 bytes, got %d", len(response.Body))
-	}
-
-	if response.BodyString() != "toola" {
-		t.Fatalf("expected first 5 bytes of body, got %q", response.BodyString())
+	if response.BodyString() != "tool" {
+		t.Fatalf("expected body truncated to limit of 4 bytes, got %q", response.BodyString())
 	}
 }
 
@@ -607,7 +604,7 @@ func TestRequestMaxBodyBytesOverridesBuilderLimit(t *testing.T) {
 
 	client := NewBuilder().SetHttpClient(httpClient).SetMaxBodyBytes(3).Build()
 
-	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource", WithMaxBodyBytes(6))
+	response, err := client.Do(t.Context(), http.MethodGet, "http://example.test/resource", WithMaxBodyBytes(6))
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -629,7 +626,7 @@ func TestSetTransportUsesCustomRoundTripper(t *testing.T) {
 		}, nil
 	})).Build()
 
-	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource")
+	response, err := client.Do(t.Context(), http.MethodGet, "http://example.test/resource")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -667,7 +664,7 @@ func TestSetHttpClientHasPriorityOverBuilderTransport(t *testing.T) {
 		})).
 		Build()
 
-	response, err := client.Do(context.Background(), http.MethodGet, "http://example.test/resource")
+	response, err := client.Do(t.Context(), http.MethodGet, "http://example.test/resource")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -707,8 +704,12 @@ func TestRedirectPolicyStopsAfterLimit(t *testing.T) {
 	}
 
 	err = checkRedirect(&http.Request{}, []*http.Request{{}, {}})
-	if !errors.Is(err, http.ErrUseLastResponse) {
-		t.Fatalf("expected redirect limiter to stop redirects after limit, got %v", err)
+	if !errors.Is(err, ErrTooManyRedirects) || !IsRedirectError(err) {
+		t.Fatalf("expected ErrTooManyRedirects after limit, got %v", err)
+	}
+
+	if IsRedirectError(http.ErrUseLastResponse) {
+		t.Fatal("expected ErrUseLastResponse not to be reported as redirect error")
 	}
 
 	if redirectCalls != 1 {
@@ -716,31 +717,72 @@ func TestRedirectPolicyStopsAfterLimit(t *testing.T) {
 	}
 }
 
-func TestRedirectPolicyWithoutMaxRedirectsUsesDefaultLimit(t *testing.T) {
-	var requests atomic.Int32
+func newRedirectLoopServer(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+
+	requests := new(atomic.Int32)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		http.Redirect(w, r, "/", http.StatusFound)
 	}))
-	defer server.Close()
+	t.Cleanup(server.Close)
 
+	return server, requests
+}
+
+func TestRedirectLimitReturnsErrorWithAndWithoutPolicy(t *testing.T) {
+	builders := map[string]ClientBuilder{
+		"no policy": NewBuilder(),
+		"policy with zero limit": NewBuilder().SetRedirectPolicy(RedirectPolicy{
+			Validate: func(req *http.Request, via []*http.Request) error {
+				return nil
+			},
+		}),
+	}
+
+	for name, builder := range builders {
+		t.Run(name, func(t *testing.T) {
+			server, requests := newRedirectLoopServer(t)
+
+			response, err := builder.Build().Get(t.Context(), server.URL)
+			if !errors.Is(err, ErrTooManyRedirects) || !IsRedirectError(err) {
+				t.Fatalf("expected ErrTooManyRedirects, got %v", err)
+			}
+
+			if response != nil {
+				t.Fatalf("expected no response with redirect error, got %d", response.StatusCode)
+			}
+
+			if got := requests.Load(); got != DEFAULT_MAX_REDIRECTS+1 {
+				t.Fatalf("expected %d requests, got %d", DEFAULT_MAX_REDIRECTS+1, got)
+			}
+		})
+	}
+}
+
+func TestRedirectPolicyNegativeLimitDoesNotFollow(t *testing.T) {
+	server, requests := newRedirectLoopServer(t)
+
+	validateCalls := 0
 	client := NewBuilder().SetRedirectPolicy(RedirectPolicy{
+		MaxRedirects: -1,
 		Validate: func(req *http.Request, via []*http.Request) error {
+			validateCalls++
 			return nil
 		},
 	}).Build()
 
-	response, err := client.Get(context.Background(), server.URL)
+	response, err := client.Get(t.Context(), server.URL)
 	if err != nil {
-		t.Fatalf("expected last redirect response without error, got %v", err)
+		t.Fatalf("expected first redirect response without error, got %v", err)
 	}
 
-	if response.StatusCode != http.StatusFound {
-		t.Fatalf("expected last 302 response, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusFound || response.RedirectCount != 0 {
+		t.Fatalf("expected first 302 without redirects, got %d after %d redirects", response.StatusCode, response.RedirectCount)
 	}
 
-	if got := requests.Load(); got != DEFAULT_MAX_REDIRECTS+1 {
-		t.Fatalf("expected %d requests, got %d", DEFAULT_MAX_REDIRECTS+1, got)
+	if requests.Load() != 1 || validateCalls != 0 {
+		t.Fatalf("expected one request and no validate calls, got %d requests and %d calls", requests.Load(), validateCalls)
 	}
 }
 
@@ -805,7 +847,7 @@ func TestMockTransportCanBeUsedViaBuilder(t *testing.T) {
 
 	client := NewBuilder().SetHeaders(headers).SetTransport(mockTransport).Build()
 
-	response, err := client.Do(context.Background(), http.MethodPost, "http://example.test/mock", WithBody(map[string]string{"name": "builder-mock"}))
+	response, err := client.Do(t.Context(), http.MethodPost, "http://example.test/mock", WithBody(map[string]string{"name": "builder-mock"}))
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -857,7 +899,7 @@ func TestDeadlineErrorsAreClassifiedAsTimeout(t *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()
 
 	_, err := NewBuilder().Build().Get(ctx, server.URL)
@@ -895,8 +937,8 @@ func TestDefaultTransportKeepsStandardSettings(t *testing.T) {
 		t.Fatalf("expected default response header timeout, got %v", transport.ResponseHeaderTimeout)
 	}
 
-	if httpClient.Timeout != 0 {
-		t.Fatalf("expected no whole-request timeout by default, got %v", httpClient.Timeout)
+	if httpClient.Timeout != DEFAULT_REQUEST_TIMEOUT {
+		t.Fatalf("expected default whole-request timeout, got %v", httpClient.Timeout)
 	}
 
 	if http.DefaultTransport.(*http.Transport) == transport {
@@ -918,7 +960,7 @@ func TestResponseTimeoutDoesNotLimitBodyReading(t *testing.T) {
 		SetResponseTimeout(50 * time.Millisecond).
 		Build()
 
-	response, err := client.Get(context.Background(), server.URL)
+	response, err := client.Get(t.Context(), server.URL)
 	if err != nil {
 		t.Fatalf("expected slow body to be read after headers arrived, got %v", err)
 	}
@@ -929,8 +971,157 @@ func TestResponseTimeoutDoesNotLimitBodyReading(t *testing.T) {
 
 	limited := NewBuilder().SetRequestTimeout(50 * time.Millisecond).Build()
 
-	_, err = limited.Get(context.Background(), server.URL)
+	_, err = limited.Get(t.Context(), server.URL)
 	if ClassifyError(err) != ErrorKindTimeout {
 		t.Fatalf("expected request timeout to stop slow body, got %q (%v)", ClassifyError(err), err)
+	}
+}
+
+func TestTLSAlertFromServerIsClassifiedAsTLS(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+	server.StartTLS()
+	defer server.Close()
+
+	for _, maxVersion := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
+		httpClient := server.Client()
+		httpClient.Transport.(*http.Transport).TLSClientConfig.MaxVersion = maxVersion
+
+		_, err := NewBuilder().SetHttpClient(httpClient).Build().Get(t.Context(), server.URL)
+		if err == nil {
+			t.Fatalf("TLS %x: expected handshake error without client certificate", maxVersion)
+		}
+
+		if !IsTLS(err) || ClassifyError(err) != ErrorKindTLS {
+			t.Fatalf("TLS %x: expected TLS classification, got %q (%v)", maxVersion, ClassifyError(err), err)
+		}
+
+		if IsConnection(err) {
+			t.Fatalf("TLS %x: expected TLS alert not to be a connection error (%v)", maxVersion, err)
+		}
+	}
+}
+
+func TestBuildClonesRedirectPolicyAndHeaders(t *testing.T) {
+	headers := http.Header{"X-Common": {"one"}}
+	builder := NewBuilder().SetHeaders(headers).SetRedirectPolicy(RedirectPolicy{MaxRedirects: 2})
+
+	client := builder.Build().(*Client)
+
+	headers.Set("X-Common", "changed")
+	builder.SetRedirectPolicy(RedirectPolicy{MaxRedirects: 5})
+
+	if client.builder.headers.Get("X-Common") != "one" {
+		t.Fatalf("expected built client to keep its headers, got %q", client.builder.headers.Get("X-Common"))
+	}
+
+	if client.builder.redirectPolicy.MaxRedirects != 2 {
+		t.Fatalf("expected built client to keep its redirect policy, got %d", client.builder.redirectPolicy.MaxRedirects)
+	}
+}
+
+func TestRequestTimeoutDefaultsAndOverrides(t *testing.T) {
+	cases := map[string]struct {
+		builder ClientBuilder
+		want    time.Duration
+	}{
+		"default":                        {NewBuilder(), DEFAULT_REQUEST_TIMEOUT},
+		"custom":                         {NewBuilder().SetRequestTimeout(2 * time.Second), 2 * time.Second},
+		"disabled":                       {NewBuilder().DisableTimeouts(true), 0},
+		"disabled with explicit":         {NewBuilder().DisableTimeouts(true).SetRequestTimeout(time.Second), time.Second},
+		"custom transport keeps default": {NewBuilder().SetTransport(http.DefaultTransport), DEFAULT_REQUEST_TIMEOUT},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := tc.builder.Build().(*Client).getHttpClient().Timeout
+			if got != tc.want {
+				t.Fatalf("expected request timeout %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func TestGetRequestBodyReaderFormAndUnsupportedTypes(t *testing.T) {
+	client := Client{}
+
+	read := func(t *testing.T, body io.Reader) string {
+		t.Helper()
+
+		payload, err := io.ReadAll(body)
+		if err != nil {
+			t.Fatalf("expected readable body, got %v", err)
+		}
+
+		return string(payload)
+	}
+
+	t.Run("ReaderIsSentAsIs", func(t *testing.T) {
+		headers := http.Header{}
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: bytes.NewBufferString("x")})
+		if err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+
+		if got := read(t, body); got != "x" {
+			t.Fatalf("expected raw reader body, got %q", got)
+		}
+
+		if headers.Get(gomime.HEADER_CONTENT_TYPE) != "" {
+			t.Fatalf("expected no Content-Type for reader body, got %q", headers.Get(gomime.HEADER_CONTENT_TYPE))
+		}
+	})
+
+	t.Run("FormValuesWithoutContentType", func(t *testing.T) {
+		headers := http.Header{}
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: url.Values{"a": {"1", "2"}, "b": {"x y"}}})
+		if err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+
+		if got := read(t, body); got != "a=1&a=2&b=x+y" {
+			t.Fatalf("expected form body, got %q", got)
+		}
+
+		if headers.Get(gomime.HEADER_CONTENT_TYPE) != gomime.CONTENT_TYPE_FORM {
+			t.Fatalf("expected form Content-Type, got %q", headers.Get(gomime.HEADER_CONTENT_TYPE))
+		}
+	})
+
+	t.Run("FormValuesWithFormContentType", func(t *testing.T) {
+		headers := http.Header{gomime.HEADER_CONTENT_TYPE: {"application/x-www-form-urlencoded; charset=utf-8"}}
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: url.Values{"a": {"1"}}})
+		if err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+
+		if got := read(t, body); got != "a=1" {
+			t.Fatalf("expected form body, got %q", got)
+		}
+	})
+
+	t.Run("JsonSuffixMediaType", func(t *testing.T) {
+		headers := http.Header{gomime.HEADER_CONTENT_TYPE: {"application/problem+json"}}
+		body, err := client.getRequestBody(headers, &RequestConfig{Body: map[string]int{"a": 1}})
+		if err != nil {
+			t.Fatalf("expected nil err, got %v", err)
+		}
+
+		if got := read(t, body); got != `{"a":1}` {
+			t.Fatalf("expected json body, got %q", got)
+		}
+	})
+
+	for name, contentType := range map[string]string{
+		"FormContentTypeWithStruct": gomime.CONTENT_TYPE_FORM,
+		"UnknownContentType":        "text/plain",
+	} {
+		t.Run(name, func(t *testing.T) {
+			headers := http.Header{gomime.HEADER_CONTENT_TYPE: {contentType}}
+			_, err := client.getRequestBody(headers, &RequestConfig{Body: map[string]string{"a": "b"}})
+			if !errors.Is(err, ErrUnsupportedContentType) {
+				t.Fatalf("expected ErrUnsupportedContentType, got %v", err)
+			}
+		})
 	}
 }

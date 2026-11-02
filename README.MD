@@ -4,6 +4,8 @@ A standard-library-first HTTP client for Go with a builder API, request options,
 
 ## Installation
 
+Requires Go 1.26 or newer.
+
 ```bash
 go get github.com/georgebent/go-httpclient
 ```
@@ -38,10 +40,10 @@ Timeouts:
 
 - `SetConnectionTimeout` limits dialing a connection (default `1s`).
 - `SetResponseTimeout` limits waiting for response headers after the request is sent (default `5s`). It does not limit reading the body.
-- `SetRequestTimeout` limits the whole request, including redirects and reading the body. There is no default; use it or a `context` deadline for downloads of unknown size.
-- `DisableTimeouts(true)` turns off the default connection and response timeouts.
+- `SetRequestTimeout` limits the whole request, including redirects and reading the body (default `30s`). Raise it or use a `context` deadline for large downloads.
+- `DisableTimeouts(true)` turns off all default timeouts. Timeouts set explicitly still apply.
 
-Connection and response timeouts apply to the built-in transport only. With `SetTransport(...)`, only `SetRequestTimeout` and the request context apply.
+Connection and response timeouts apply to the built-in transport only. With `SetTransport(...)`, only the request timeout and the request context apply.
 
 The built-in transport is a clone of `http.DefaultTransport`, so proxy settings from the environment, HTTP/2, and TLS handshake timeouts work as in the standard library.
 
@@ -96,12 +98,16 @@ Available request options:
 
 `WithBody(...)` encodes the body as follows:
 
-- `[]byte` and `string` are sent as is.
-- For XML content types (`application/xml`, `text/xml`, `*+xml`, with any parameters such as `charset`), the body is encoded as XML.
-- Otherwise the body is encoded as JSON. If no `Content-Type` is set, `application/json` is added.
+- `[]byte`, `string`, and any `io.Reader` are sent as is.
+- `url.Values` is form-encoded when `Content-Type` is `application/x-www-form-urlencoded` or not set; in the latter case that `Content-Type` is added.
+- Other values are encoded by the media type of `Content-Type` (parameters such as `charset` are ignored):
+  - JSON for `application/json` and `*+json`;
+  - XML for `application/xml`, `text/xml`, and `*+xml`;
+  - JSON with an added `Content-Type: application/json` when no `Content-Type` is set.
+- Any other combination fails with `gohttp.ErrUnsupportedContentType`, for example a struct with `text/plain`. Send such bodies as `[]byte`, `string`, or a reader.
 
 If the response body exceeds `WithMaxBodyBytes(...)`, the client returns `response, gohttp.ErrBodyTooLarge`.
-The response metadata remains populated, and `response.Body` contains the first `limit+1` bytes.
+The response metadata remains populated, and `response.Body` contains the first `limit` bytes.
 
 ## Response model
 
@@ -136,7 +142,13 @@ client := gohttp.NewBuilder().
 	Build()
 ```
 
-When the redirect limit is reached, the last redirect response is returned without an error. If `MaxRedirects` is `0`, the limit is 10.
+Redirect limits:
+
+- `MaxRedirects: 0` (or no policy) follows up to 10 redirects.
+- `MaxRedirects: n` follows up to `n` redirects.
+- `MaxRedirects: -1` does not follow redirects; the first `3xx` response is returned without an error.
+
+When the limit is exceeded, the request fails with an error that matches `gohttp.ErrTooManyRedirects` and `gohttp.IsRedirectError`.
 
 If you provide `SetHttpClient(...)`, it has the highest priority. Builder transport and redirect settings are not overlaid onto that client.
 
@@ -150,11 +162,12 @@ if gohttp.IsDNS(err) { ... }
 if gohttp.IsTLS(err) { ... }
 if gohttp.IsConnection(err) { ... }
 if gohttp.IsCanceled(err) { ... }
+if gohttp.IsRedirectError(err) { ... }
 
 kind := gohttp.ClassifyError(err)
 ```
 
-`IsTimeout` covers network timeouts, `SetRequestTimeout`, and expired `context` deadlines. `IsCanceled` covers only `context` cancellation.
+`IsTimeout` covers network timeouts, `SetRequestTimeout`, and expired `context` deadlines. `IsCanceled` covers only `context` cancellation. `IsTLS` covers record header errors, TLS alerts sent or received during the handshake, and certificate verification errors.
 
 ## Testing
 
@@ -185,10 +198,24 @@ The global mock server (`StartMockServer`, `StopMockServer`, `MockupServer`, `go
 
 See `examples/get.go`, `examples/post.go`, and `examples/singleton_client.go`.
 
-## Linting
+## Development
+
+Tests run with the race detector in CI:
+
+```bash
+go test -race ./...
+```
+
+Linting uses golangci-lint v2 (CI pins v2.15.0) with the config in `.golangci.yml`:
 
 ```bash
 golangci-lint run ./...
+```
+
+Apply modernizations suggested by the Go toolchain:
+
+```bash
+go fix ./...
 ```
 
 ## Collaboration
